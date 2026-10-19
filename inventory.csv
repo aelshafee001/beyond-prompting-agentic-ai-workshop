@@ -1,0 +1,16 @@
+product_id,name,category,quantity,minimum_stock,price
+P001,Notebook,Stationery,4,10,45
+P002,Ballpoint Pen,Stationery,25,15,8.5
+P003,Pencil,Stationery,6,12,X
+P004,Eraser,Stationery,14,10,6
+P005,USB Flash Drive,Electronics,3,8,190
+P006,Wireless Mouse,Electronics,9,6,350
+P007,Keyboard,Electronics,2,5,420
+P008,HDMI Cable,Electronics,12,7,150
+P009,Whiteboard Marker,Stationery,5,10,30
+P010,Sticky Notes,Stationery,16,8,28
+P011,A4 Paper Pack,Office,3,6,175
+P012,Stapler,Office,8,5,95
+P013,Paper Clips Box,Office,2,6,24
+P014,Desk Organizer,Office,7,5,160
+P015,File Folder,Office,10,10,18
