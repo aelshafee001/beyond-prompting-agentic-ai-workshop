@@ -247,15 +247,15 @@ for round_number in range(1, 13):
                 a = values["a"]
                 b = values["b"]
 
-                if (
-                    isinstance(a, bool)
-                    or isinstance(b, bool)
-                    or not isinstance(a, (int, float))
-                    or not isinstance(b, (int, float))
-                ):
-                    raise ValueError(
-                        "Tool arguments must be numeric."
-                    )
+                #if (
+                #    isinstance(a, bool)
+                #    or isinstance(b, bool)
+                #    or not isinstance(a, (int, float))
+                #    or not isinstance(b, (int, float))
+                #):
+                #    raise ValueError(
+                #        "Tool arguments must be numeric."
+                #    )
 
                 print(
                     f"# ROUND {round_number}: "
