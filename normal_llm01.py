@@ -11,12 +11,18 @@ client = OpenAI(
 model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 response = client.responses.create(
     model=model,  # replace if a different model is enabled for you
-    input="Explain binary search to a first-year programmer in 150 words."
+    ##input="Explain binary search to a first-year programmer in 150 words."
+    input="hello"
 )
 #print(response.id)
-print(response.output)
-print("\n\n")
-print(response.output[0].type)
+##print(response.output)
+##print("\n\n")
+#print(response.output[0].type)
+#print(response.output[1].type)
+#print(response.output[0])
+#print(response.output[1])
+for i, item in enumerate(response.output):
+    print(f"Output {i}: {item.type}")
 print("\n\n")
 print(response.output_text)
 
