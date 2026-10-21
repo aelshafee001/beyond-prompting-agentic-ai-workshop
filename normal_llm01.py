@@ -23,6 +23,7 @@ response = client.responses.create(
 #print(response.output[1])
 for i, item in enumerate(response.output):
     print(f"Output {i}: {item.type}")
+    print(f"Output {i}: {item}")
 print("\n\n")
 print(response.output_text)
 
