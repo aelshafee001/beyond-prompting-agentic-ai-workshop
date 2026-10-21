@@ -66,12 +66,13 @@ while True:
 
         # Extract LLM response
         assistant_message = response.choices[0].message.content
+        #print(response.choices[0].message)
         
 
         # Display response
         print("\nLLM:")
         print(assistant_message)
-        print("\nLLM:")
+        #print("\nLLM:")
 
         # Save assistant reply in conversation history
         messages.append({
