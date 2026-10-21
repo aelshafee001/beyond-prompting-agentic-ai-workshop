@@ -1,9 +1,9 @@
 """Approach 3: One tool call per round, up to three trials per call.
 
 Run: python 03_graph_harness_inventory.py --trace YES
-Needs: common.py, inventory.csv, and .env containing GROQ_API_KEY.
+Needs: common.py, inventory.csv, and .env containing LLM_API_KEY.
 
-For each product, Groq freely chooses one tool per round.
+For each product, LLM freely chooses one tool per round.
 The harness validates the tool against current Python state.
 Each round contains up to three attempts at ONE action.
 Any round that fails all three attempts skips the entire product.
@@ -25,7 +25,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--trace", choices=["YES", "NO"], default="YES")
 args = parser.parse_args()
 MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-client = OpenAI(api_key=os.environ["GROQ_API_KEY"], base_url="https://api.groq.com/openai/v1")
+client = OpenAI(api_key=os.environ["GROQ_API_KEY"], base_url="https://api.LLM.com/openai/v1")
 MAX_ROUNDS = 8
 MAX_TRIALS = 3
 
@@ -75,7 +75,7 @@ TOOLS = [
 
 
 def ask_llm(messages):
-    pause("DECISION - Ask Groq to choose a tool.")
+    pause("DECISION - Ask LLM to choose a tool.")
     response = client.chat.completions.create(
         model=MODEL,
         messages=messages,
@@ -135,7 +135,7 @@ for row_number in range(1, total_products + 1):
 
     # Each ROUND handles exactly ONE successful tool call.
     for round_number in range(1, MAX_ROUNDS + 1):
-        print(f"\nROUND {round_number}/{MAX_ROUNDS} | Groq chooses the next tool")
+        print(f"\nROUND {round_number}/{MAX_ROUNDS} | LLM chooses the next tool")
         round_succeeded = False
 
         # Three trials for THIS tool call, not three full workflows.
@@ -245,8 +245,8 @@ for row_number in range(1, total_products + 1):
     pause("Continue to next product.")
 
 
-# STEP 6 - LET GROQ SELECT REPORTING TOOLS
-print("\nREPORT PHASE - Groq selects print_report and save_report")
+# STEP 6 - LET LLM SELECT REPORTING TOOLS
+print("\nREPORT PHASE - LLM selects print_report and save_report")
 messages = [
     {"role": "system", "content": (
         "All products are finished. Call print_report and save_report, "
@@ -287,7 +287,7 @@ for round_number in range(1, MAX_ROUNDS + 1):
             result = {"error": str(error)}
         send_result(messages, call, result)
     except Exception as error:
-        print("Groq reporting error:", error)
+        print("LLM reporting error:", error)
         break
 
 

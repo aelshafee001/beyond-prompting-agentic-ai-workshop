@@ -69,7 +69,7 @@ if not products:
 records = []
 for product in products:
     record = product.copy()
-    record["price"] = str(product["price"])
+    #record["price"] = str(product["price"])
     records.append(record)
 
 print("Products loaded:", len(records))
