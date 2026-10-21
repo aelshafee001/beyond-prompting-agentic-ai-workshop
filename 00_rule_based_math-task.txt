@@ -1,0 +1,19 @@
+1. Define modulo function
+def mod(a, b):    print(f"LOCAL PYTHON FUNCTION: mod({a}, {b})")    return a % b
+
+2. Register the function
+FUNCTIONS = {    "add": add,    "subtract": subtract,    "multiply": multiply,    "divide": divide,    "mod": mod,  # NEW}
+
+3. Map the % operator
+OPERATORS = {    "+": "add",    "-": "subtract",    "*": "multiply",    "/": "divide",    "%": "mod",  # NEW}
+
+
+4. Update operator precedence
+for operators in ["*/%", "+-"]:
+
+5. Update tokenization
+for op in ["+", "-", "*", "/", "%"]:
+
+6. Recommended improvement — handle modulo by zero
+def mod(a, b):    if b == 0:        raise ValueError("Modulo by zero")    return a % b
+

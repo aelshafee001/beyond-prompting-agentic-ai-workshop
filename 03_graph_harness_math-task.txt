@@ -1,0 +1,24 @@
+1. Define the modulo function
+def mod(a, b):    print(f"LOCAL PYTHON FUNCTION: mod({a}, {b})")    return a % b
+
+2. Register the function in FUNCTIONS
+FUNCTIONS = {    "add": add,    "subtract": subtract,    "multiply": multiply,    "divide": divide,    "mod": mod,  # NEW}
+
+3. Update the LLM decision prompt
+
+Add modulo to the allowed operations:
+Allowed operations:add, subtract, multiply, divide, mod.
+
+Update arithmetic precedence:
+2. Multiplication (*), division (/), and modulus (%)   have equal precedence, before addition (+) and   subtraction (-).
+
+
+4. Update the harness validation — still missing
+
+Your second file checks division by zero but not modulo by zero.
+
+Replace:
+if action["tool"] == "divide" and b == 0:    return False, "Division by zero blocked by harness."
+
+With:
+if action["tool"] in ("divide", "mod") and b == 0:    return False, "Division or modulo by zero blocked by harness."
