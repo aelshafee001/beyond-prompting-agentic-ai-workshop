@@ -1,78 +1,121 @@
-"""Approach 1: Normal LLM (Groq), no exposed Python tools.
-Run: python 01_normal_llm_inventory.py
+"""Approach 1: Normal LLM analyzes inventory without Python tools.
+
+Run: python 01_normal_llm_inventory.py --trace YES
+Needs: common.py, inventory.csv, and .env containing GROQ_API_KEY.
+
+Python loads and saves data. Groq calculates the restocking report itself.
+No functions or tool definitions are sent to the LLM.
 """
+
+import argparse
 import json
 import os
+
 from dotenv import load_dotenv
 from openai import OpenAI
 from common import ROOT, load_inventory, print_report, save_report
 
-load_dotenv(ROOT / '.env')
-MODEL = os.getenv('GROQ_MODEL', 'openai/gpt-oss-20b')
-if not os.getenv('GROQ_API_KEY'):
-    raise SystemExit('Missing GROQ_API_KEY in .env')
-client = OpenAI(api_key=os.environ['GROQ_API_KEY'], base_url='https://api.groq.com/openai/v1')
 
-print('=' * 70)
-print('APPROACH 1 - NORMAL LLM (GROQ), NO TOOLS')
-print('=' * 70)
-print('# STEP 1 - READ LOCAL CSV')
-input('Press <Enter> to read inventory.csv...')
-products = load_inventory()
-# Decimal prices are converted to short strings before JSON serialization.
-records = [{**p, 'price': str(p['price'])} for p in products]
-#records = []
-#for p in products:
-#    record = p.copy()
-#    record["price"] = str(p["price"])
-#    records.append(record)
-#products=records
-print('Loaded', len(records), 'products')
+# STEP 1 - SETUP (same style as Approach 2)
+load_dotenv(ROOT / ".env")
 
-print('# STEP 2 - SEND CSV RECORDS IN THE PROMPT')
-input('Press <Enter> to send one prompt to Groq...')
-response = client.chat.completions.create(
-    model=MODEL,
-    messages=[
-        {'role': 'system', 'content': (
-            'You are an inventory assistant. For EACH supplied product return one JSON item. '
-            'needs_restock is true only when quantity < minimum_stock. '
-            'units_to_order=max(0,minimum_stock-quantity). '
-            'estimated_cost_egp=units_to_order*price, formatted to two decimals. '
-            'Return ONLY a JSON array, in the same order. Each item must contain '
-            'product_id, name, needs_restock (boolean), units_to_order (integer), '
-            'estimated_cost_egp (string). Do not invent products. Do not use Markdown code fences.')},
-        {'role': 'user', 'content': f'Analyze these {len(records)} local CSV records: ' +
-                                  json.dumps(records, ensure_ascii=False)}
-    ],
-    temperature=0,
+parser = argparse.ArgumentParser()
+parser.add_argument("--trace", choices=["YES", "NO"], default="YES")
+args = parser.parse_args()
+
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+if not os.getenv("GROQ_API_KEY"):
+    raise SystemExit("GROQ_API_KEY missing from .env")
+
+client = OpenAI(
+    api_key=os.environ["GROQ_API_KEY"],
+    base_url="https://api.groq.com/openai/v1"
 )
-raw = (response.choices[0].message.content or '').strip()
-print('# GROQ RAW REPLY:', raw)
-print('# Groq usage:', response.usage)
-input('Press <Enter> to parse response...')
-# Strip optional Markdown ```json ... ``` around an otherwise valid JSON answer.
-json_text = raw
-lines = json_text.splitlines()
-if lines and lines[0].strip().lower() in ('```json', '```'):
-    if len(lines) < 3 or lines[-1].strip() != '```':
-        raise SystemExit('Cannot save: JSON code fence is not properly closed.')
-    json_text = '\n'.join(lines[1:-1]).strip()
-    print('# Removed Markdown code fences before parsing.')
 
-# Parsing is a local formatting operation; it is NOT a correctness verifier.
+
+def pause(message):
+    """Pause during the live demonstration, or just print the step."""
+    if args.trace == "YES":
+        input(message + "  Press Enter...")
+    else:
+        print(message)
+
+
+# STEP 2 - ASK LLM (NO TOOL CALLING)
+def ask_LLM(messages):
+    """Send the inventory to LLM and return its written answer."""
+    pause("Ask LLM to analyze the inventory.")
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+    )
+    assistant = response.choices[0].message
+    messages.append({"role": "assistant", "content": assistant.content or ""})
+    return (assistant.content or "").strip()
+
+
+# STEP 3 - READ INVENTORY
+print("=" * 65)
+print("APPROACH 1 - NORMAL LLM INVENTORY (NO TOOLS)")
+print("=" * 65)
+
+pause("Read inventory.csv.")
+products = load_inventory()
+
+if not products:
+    raise SystemExit("No valid inventory products found.")
+
+# Prices can be floats or Decimal values; turn them into JSON-friendly strings.
+records = []
+for product in products:
+    record = product.copy()
+    record["price"] = str(product["price"])
+    records.append(record)
+
+print("Products loaded:", len(records))
+
+
+# STEP 4 - SEND PRODUCTS TO THE NORMAL LLM
+instructions = (
+    "You are an inventory assistant. Calculate restocking for every product. "
+    "needs_restock = quantity < minimum_stock. "
+    "units_to_order = max(0, minimum_stock - quantity). "
+    "estimated_cost_egp = units_to_order * price, formatted to 2 decimals. "
+    "Return ONLY a JSON array in the same order, with these fields for each item: "
+    "product_id, name, needs_restock, units_to_order, estimated_cost_egp. "
+    "Do not invent or omit products."
+)
+
+messages = [
+    {"role": "system", "content": instructions},
+    {"role": "user", "content": "Analyze these products:\n" + json.dumps(records)},
+]
+
+answer = ask_LLM(messages)
+print("\nLLM ANSWER:\n", answer)
+
+
+# STEP 5 - READ THE JSON RESPONSE
+pause("Convert LLM's answer into a Python report.")
+
+# Remove Markdown fences if the LLM added them.
+if answer.startswith("```"):
+    answer = "\n".join(answer.splitlines()[1:-1]).strip()
+
 try:
-    report = json.loads(json_text)
+    report = json.loads(answer)
     if not isinstance(report, list) or len(report) != len(products):
-        raise ValueError(f'Groq response must contain exactly {len(products)} JSON records.')
-    expected_keys = {'product_id', 'name', 'needs_restock', 'units_to_order', 'estimated_cost_egp'}
-    for record in report:
-        if not isinstance(record, dict) or set(record) != expected_keys:
-            raise ValueError('Groq response has an incorrect JSON schema.')
-except (ValueError, TypeError) as exc:
-    raise SystemExit(f'Cannot save invalid LLM JSON: {exc}')
+        raise ValueError("Expected one JSON result per inventory product.")
+except (ValueError, TypeError) as error:
+    raise SystemExit("Invalid LLM report: " + str(error))
 
-print('# STEP 3 - DISPLAY MODEL ANSWER (NOT INDEPENDENTLY VERIFIED)')
+
+# STEP 6 - PRINT AND SAVE (NORMAL LOCAL PYTHON, NOT LLM TOOLS)
+pause("Print LLM's inventory report.")
 print_report(report)
-input('Press <Enter> to save output...')
-save_report('01_normal_llm_inventory.csv', report, ['Model: ' + MODEL, raw])
+
+pause("Save the report and LLM response.")
+save_report("01_normal_llm_inventory.csv", report, ["Model: " + MODEL, answer])
+print("Finished:", len(report), "products analyzed.")
+
+# Note: Python only parses and displays the reply; it does not verify LLM math.

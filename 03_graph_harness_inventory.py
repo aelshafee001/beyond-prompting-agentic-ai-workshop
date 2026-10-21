@@ -1,27 +1,43 @@
-"""Approach 3: Graph / Harness / Loop with four Groq-selectable local tools.
+"""Approach 3: One tool call per round, up to three trials per call.
 
-Run: python 03_graph_harness_inventory_FUNCTIONS.py --trace YES
-Requires common.py, inventory.csv, and .env containing GROQ_API_KEY.
+Run: python 03_graph_harness_inventory.py --trace YES
+Needs: common.py, inventory.csv, and .env containing GROQ_API_KEY.
 
-Python counts CSV rows. Each row gets up to THREE trials. In a trial, Groq
-selects read_product, receives its result, and selects restock_row. Python
-performs every operation. Invalid input or tool choices produce feedback.
-After three failed trials, skip that row and continue. At the end, Groq may
-select print_report and save_report. There is no independent verification of
-model-generated arithmetic: restock_row itself performs the calculation.
+For each product, Groq freely chooses one tool per round.
+The harness validates the tool against current Python state.
+Each round contains up to three attempts at ONE action.
+Any round that fails all three attempts skips the entire product.
 """
+
 import argparse
 import csv
 import json
+import math
 import os
-from decimal import Decimal, InvalidOperation
 
 from dotenv import load_dotenv
 from openai import OpenAI
 from common import ROOT, DATA, OUTDIR, read_product, restock_row, print_report, save_report
 
-# Same function dictionary used in Approach 2.
-# Groq selects a NAME. Python executes the actual function from common.py.
+# STEP 1 - SETUP
+load_dotenv(ROOT / ".env")
+parser = argparse.ArgumentParser()
+parser.add_argument("--trace", choices=["YES", "NO"], default="YES")
+args = parser.parse_args()
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+client = OpenAI(api_key=os.environ["GROQ_API_KEY"], base_url="https://api.groq.com/openai/v1")
+MAX_ROUNDS = 8
+MAX_TRIALS = 3
+
+
+def pause(message):
+    if args.trace == "YES":
+        input(message + " Press Enter...")
+    else:
+        print(message)
+
+
+# STEP 2 - REGISTER LOCAL FUNCTIONS
 FUNCTIONS = {
     "read_product": read_product,
     "restock_row": restock_row,
@@ -29,325 +45,260 @@ FUNCTIONS = {
     "save_report": save_report,
 }
 
-# STEP 1 - CONFIGURATION
-load_dotenv(ROOT / '.env')
-parser = argparse.ArgumentParser()
-parser.add_argument('--trace', choices=('YES', 'NO'), default='YES')
-args = parser.parse_args()
-trace = args.trace == 'YES'
-MODEL = os.getenv('GROQ_MODEL', 'openai/gpt-oss-20b')
-MAX_TRIALS = 3
-MAX_TOOL_DECISIONS = 8  # Prevent an endless model tool-selection loop.
-
-if not os.getenv('GROQ_API_KEY'):
-    raise SystemExit('GROQ_API_KEY missing from .env')
-client = OpenAI(api_key=os.environ['GROQ_API_KEY'], base_url='https://api.groq.com/openai/v1')
-
-# STEP 2 - DESCRIBE THE SAME FOUR TOOLS AS APPROACH 2
-TOOL_DESCRIPTIONS = {
-    'read_product': 'Read one product from inventory.csv by its 1-based data row number.',
-    'restock_row': 'Calculate restocking for the product already read, using local Python.',
-    'print_report': 'Print the accumulated inventory report after all products.',
-    'save_report': 'Save the accumulated report after all products.',
-}
-
-
-def build_tool(name, description, properties=None):
-    if properties is None:
-        properties = {}
+# STEP 3 - DESCRIBE TOOLS TO LLM
+# Here a small helper avoids repeating the tool JSON structure.
+def tool(name, description, properties=None):
+    properties = properties or {}
     return {
-        'type': 'function',
-        'function': {
-            'name': name,
-            'description': description,
-            'parameters': {
-                'type': 'object',
-                'properties': properties,
-                'required': list(properties.keys()),
-                'additionalProperties': False,
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": list(properties),
+                "additionalProperties": False,
             },
         },
     }
 
 
-TOOLS = []
-for name, description in TOOL_DESCRIPTIONS.items():
-    properties = {}
-    if name == 'read_product':
-        properties = {
-            'row_number': {
-                'type': 'integer',
-                'description': 'Product data row number starting from 1',
-            }
-        }
-    TOOLS.append(build_tool(name, description, properties))
+TOOLS = [
+    tool("read_product", "Read a product by CSV data row number.", {
+        "row_number": {"type": "integer", "description": "Data row starting at 1"}
+    }),
+    tool("restock_row", "Calculate restocking for the currently read product."),
+    tool("print_report", "Print the completed report."),
+    tool("save_report", "Save the completed report."),
+]
 
-print('=' * 70)
-print('APPROACH 3 - GRAPH / HARNESS / LOOP: FOUR LOCAL TOOLS')
-print('Available tools:', ', '.join(TOOL_DESCRIPTIONS))
-print('Maximum trials per product:', MAX_TRIALS)
-print('=' * 70)
 
-# STEP 3 - PYTHON COUNTS CSV ROWS (NO FIXED COUNT, DUPLICATES ALLOWED)
-if trace: input('Press <Enter> to count CSV products...')
-with DATA.open('r', encoding='utf-8-sig', newline='') as handle:
-    total_products = sum(1 for row in csv.DictReader(handle))
-print('Number of CSV products:', total_products)
+def ask_llm(messages):
+    pause("DECISION - Ask Groq to choose a tool.")
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        tools=TOOLS,
+        tool_choice="auto",
+        parallel_tool_calls=False,
+    )
+    assistant = response.choices[0].message
+    calls = assistant.tool_calls or []
+    if len(calls) == 1:
+        messages.append(assistant.model_dump(exclude_none=True))
+    return calls
+
+
+def send_result(messages, call, result):
+    messages.append({
+        "role": "tool",
+        "tool_call_id": call.id,
+        "content": json.dumps(result),
+    })
+
+
+# STEP 4 - COUNT PRODUCTS AND PREPARE REPORT
+with open(DATA, newline="", encoding="utf-8-sig") as file:
+    total_products = sum(1 for _ in csv.DictReader(file))
 
 report = []
 transcript = []
 skipped = []
+print("APPROACH 3 - INVENTORY GRAPH / HARNESS / LOOP")
+print("Products:", total_products)
+print("Structure: PRODUCT -> ROUND -> TRIAL")
 
-# STEP 4 - ONE GRAPH ROUND PER PRODUCT
+
+# STEP 5 - PROCESS EACH PRODUCT
 for row_number in range(1, total_products + 1):
-    print('\n' + '#' * 70)
-    print(f'# PRODUCT ROUND {row_number}/{total_products}')
-    accepted = False
-    feedback = 'None'
-    last_code = ''
+    print(f"\n{'=' * 60}\nPRODUCT {row_number}/{total_products}")
 
-    # NODE A: LOOP - THREE COMPLETE ATTEMPTS FOR THIS ROW
-    for trial in range(1, MAX_TRIALS + 1):
-        print(f'\n# TRIAL {trial}/{MAX_TRIALS} FOR PRODUCT ROW {row_number}')
-        print('# Feedback from previous trial:', feedback)
-        print('# The CSV will be reread when Groq calls read_product.')
-        if trace: input('Press <Enter> to start this trial...')
+    product = None
+    product_id = ""
+    completed = False
+    feedback = "None"
 
-        current_product = None
-        calculated = False
-        error = ''
-        tool_decisions = 0
+    # Keep the same conversation across rounds and retries.
+    messages = [
+        {"role": "system", "content": (
+            "You are choosing Python tools for one inventory product. "
+            "Choose the most useful next tool for processing the product. "
+            "You have access to the tool results and conversation history. "
+            "Do not calculate inventory quantities or costs yourself. "
+            "Select exactly one tool per response. "
+            "Use error feedback to revise an unsuccessful request. "
+            "Reporting is a separate task after all products are processed."
+        )},
+        {"role": "user", "content": f"Process CSV data row {row_number}."},
+    ]
 
-        # Fresh conversation for each trial. Previous feedback is included.
-        messages = [
-            {'role': 'system', 'content': (
-                'You control four Python tools: read_product, restock_row, '
-                'print_report and save_report. Select your next tool yourself. '
-                'For this product first call read_product with the requested row_number. '
-                'After its successful tool result, call restock_row. '
-                'Never calculate inventory quantities or costs yourself. '
-                'Do not print or save reports while processing a product. '
-                'If you receive an error, read the feedback and act appropriately.')},
-            {'role': 'user', 'content': (
-                f'Process inventory.csv data row {row_number}. '
-                'Use local Python tools to read and calculate this one product. '
-                f'Feedback from previous trial: {feedback}')},
-        ]
+    # Each ROUND handles exactly ONE successful tool call.
+    for round_number in range(1, MAX_ROUNDS + 1):
+        print(f"\nROUND {round_number}/{MAX_ROUNDS} | Groq chooses the next tool")
+        round_succeeded = False
 
-        # NODE B: DECISION -> VALIDATION -> EXECUTION -> STATE UPDATE
-        while not calculated and not error:
-            tool_decisions += 1
-            if tool_decisions > MAX_TOOL_DECISIONS:
-                error = 'Maximum tool-selection decisions reached for this trial'
-                break
+        # Three trials for THIS tool call, not three full workflows.
+        for trial in range(1, MAX_TRIALS + 1):
+            print(f"  TRIAL {trial}/{MAX_TRIALS} | Feedback: {feedback}")
+            pause("Start trial.")
 
-            print(f'# DECISION NODE - Groq selects a tool (decision {tool_decisions})')
-            if trace: input('Press <Enter> to ask Groq for its next tool...')
+            # Give context, but NEVER prescribe the tool name.
+            messages.append({"role": "user", "content": (
+                f"Continue processing CSV data row {row_number}. "
+                f"Choose the next useful action. Feedback: {feedback}"
+            )})
+
             try:
-                response = client.chat.completions.create(
-                    model=MODEL, messages=messages, tools=TOOLS,
-                    tool_choice='auto', parallel_tool_calls=False,
+                calls = ask_llm(messages)
+                if len(calls) != 1:
+                    raise ValueError("Select exactly one tool call in this round.")
+
+                call = calls[0]
+                name = call.function.name
+                params = json.loads(call.function.arguments or "{}")
+                print("VALIDATION - Requested:", name, params)
+
+                try:
+                    # The LLM decides the tool; Python enforces valid state transitions.
+                    if name == "read_product":
+                        if params != {"row_number": row_number}:
+                            raise ValueError(f"Use row_number={row_number}.")
+                        pause("EXECUTION - Read CSV product.")
+                        raw = FUNCTIONS[name](row_number)  # Read again on every retry.
+                        product_id = raw.get("product_id", "")
+                        raw["quantity"] = int(raw["quantity"])
+                        raw["minimum_stock"] = int(raw["minimum_stock"])
+                        raw["price"] = float(raw["price"])
+                        if (raw["quantity"] < 0 or raw["minimum_stock"] < 0
+                                or raw["price"] < 0 or not math.isfinite(raw["price"])):
+                            raise ValueError("Invalid stock or price.")
+                        product = raw  # Store only after successful read and conversion.
+                        result = {"product": product}
+
+                    elif name == "restock_row":
+                        if product is None:
+                            raise ValueError("Cannot calculate yet: no product has been read.")
+                        if params:
+                            raise ValueError("restock_row takes no arguments.")
+                        pause("EXECUTION - Calculate restocking.")
+                        result = FUNCTIONS[name](product)
+                        report.append(result)
+                        completed = True
+
+                    else:
+                        raise ValueError(
+                            "This tool cannot run while processing an individual product."
+                        )
+
+                    round_succeeded = True
+                    feedback = "None"
+                    print("STATE UPDATE - Success:", result)
+
+                except Exception as error:
+                    feedback = str(error)
+                    result = {"error": feedback}
+                    print("FAILED ACTION:", feedback)
+
+                transcript.append(
+                    f"Product {row_number}, round {round_number}, "
+                    f"trial {trial}: {name} -> {result}"
                 )
-                assistant = response.choices[0].message
-                calls = assistant.tool_calls or []
-                print('# GROQ SELECTED:', [c.function.name for c in calls] or 'No tool')
-                if not calls:
-                    error = 'Groq finished without selecting the required tool'
-                    break
+                send_result(messages, call, result)
 
-                # The assistant tool call must be recorded before sending tool results.
-                messages.append(assistant.model_dump(exclude_none=True))
-                for call in calls:
-                    name = call.function.name
-                    print('# VALIDATION NODE - Requested tool:', name)
-                    print('# FUNCTION LOOKUP:', 'FUNCTIONS[' + repr(name) + ']')
-                    try:
-                        parameters = json.loads(call.function.arguments or '{}')
-                        if not isinstance(parameters, dict):
-                            raise ValueError('Tool arguments must be a JSON object')
-                        if name not in FUNCTIONS:
-                            raise ValueError('Unknown tool: ' + name)
+            except Exception as error:
+                feedback = str(error)
+                print("DECISION ERROR:", feedback)
+                transcript.append(
+                    f"Product {row_number}, round {round_number}, "
+                    f"trial {trial}: ERROR - {feedback}"
+                )
+                messages.append({"role": "user", "content": f"Error: {feedback}"})
 
-                        if name == 'read_product':
-                            if parameters != {'row_number': row_number}:
-                                raise ValueError(f'Only row_number={row_number} is allowed in this round')
-                            if current_product is not None:
-                                raise ValueError('This row was already read in this trial')
+            if round_succeeded:
+                print(f"ROUND {round_number} COMPLETE (trial {trial})")
+                break  # End trials; next round handles the next tool call.
 
-                            print('# EXECUTION NODE - common.read_product')
-                            if trace: input('Press <Enter> to read the CSV row locally...')
-                            raw = FUNCTIONS[name](**parameters)  # CSV reread on each trial.
-                            last_code = raw.get('product_id', '')
-                            print('# PYTHON READ:', raw)
+            if trial < MAX_TRIALS:
+                pause("Retry this round with feedback. You can correct inventory.csv first.")
 
-                            # Check CSV numeric inputs, not a second restock calculation.
-                            quantity_text = (raw.get('quantity') or '').strip()
-                            minimum_text = (raw.get('minimum_stock') or '').strip()
-                            if not quantity_text.isdecimal() or not minimum_text.isdecimal():
-                                raise ValueError('quantity and minimum_stock must be nonnegative whole numbers')
-                            quantity = int(quantity_text)
-                            minimum_stock = int(minimum_text)
-                            price = Decimal((raw.get('price') or '').strip())
-                            if not price.is_finite() or price < 0:
-                                raise ValueError('price must be finite and nonnegative')
+        if not round_succeeded:
+            print(f"ROUND {round_number} FAILED -> SKIP ENTIRE PRODUCT")
+            break  # Leave the rounds for this product.
 
-                            current_product = raw.copy()
-                            current_product['quantity'] = quantity
-                            current_product['minimum_stock'] = minimum_stock
-                            current_product['price'] = price
-                            result = {
-                                'status': 'product_read',
-                                'product': {
-                                    'product_id': last_code,
-                                    'name': raw.get('name', ''),
-                                    'quantity': quantity,
-                                    'minimum_stock': minimum_stock,
-                                    'price': str(price),
-                                },
-                            }
+        if completed:
+            print("PRODUCT COMPLETED -> NEXT PRODUCT")
+            break  # Two calls succeeded; no extra rounds.
 
-                        elif name == 'restock_row':
-                            if parameters:
-                                raise ValueError('restock_row takes no LLM arguments')
-                            if current_product is None:
-                                raise ValueError('Call read_product successfully first')
-                            print('# EXECUTION NODE - common.restock_row')
-                            if trace: input('Press <Enter> to calculate restocking locally...')
-                            decision = FUNCTIONS[name](product=current_product)
-                            report.append(decision)
-                            calculated = True
-                            accepted = True
-                            result = decision
-                            print('# PYTHON CALCULATED:', decision)
-
-                        else:
-                            raise ValueError(f'{name} is only available after all product rounds')
-
-                    except (ValueError, InvalidOperation, TypeError, AttributeError, IndexError, OSError) as exc:
-                        error = str(exc)
-                        result = {'error': error}
-                        print('# INVALID EDGE -> FEEDBACK:', error)
-
-                    print('# STATE UPDATE - Returning Python result to Groq:', result)
-                    transcript.append(f'Product {row_number}, trial {trial}: {name} -> {result}')
-                    messages.append({
-                        'role': 'tool',
-                        'tool_call_id': call.id,
-                        'content': json.dumps(result),
-                    })
-                    if calculated or error:
-                        break
-
-            except Exception as exc:
-                error = f'Groq API error: {exc}'
-                print('# DECISION ERROR:', error)
-
-        # NODE C: ACCEPT / FEEDBACK / RETRY
-        if accepted:
-            transcript.append(f'Product {row_number}: ACCEPTED on trial {trial}')
-            print(f'# ACCEPTED PRODUCT ROW {row_number} ON TRIAL {trial}')
-            if trace: input('Press <Enter> to move to the next product...')
-            break
-
-        feedback = error or 'Trial finished without a successful restock_row call'
-        print(f'# FAILED TRIAL {trial}/{MAX_TRIALS}: {feedback}')
-        transcript.append(f'Product {row_number}, trial {trial}: FAILED: {feedback}')
-        if trial < MAX_TRIALS:
-            print('# FEEDBACK -> LOOP BACK TO THE SAME CSV ROW')
-            print('# You may correct inventory.csv before the next trial.')
-            if trace: input('Press <Enter> to retry the SAME product...')
-
-    # NODE D: SKIP AFTER THREE FAILED TRIALS
-    if not accepted:
-        print(f'# THREE FAILED TRIALS -> SKIP PRODUCT ROW {row_number}')
+    if not completed:
+        if feedback == "None":
+            feedback = f"Maximum {MAX_ROUNDS} rounds reached."
         skipped.append({
-            'row': row_number + 1,
-            'product_id': last_code,
-            'reason': feedback,
-            'trials': MAX_TRIALS,
+            "row": row_number + 1,
+            "product_id": product_id,
+            "reason": feedback,
+            "trials": MAX_TRIALS,
         })
-        transcript.append(f'Product {row_number}: SKIPPED after {MAX_TRIALS} trials')
+        transcript.append(f"Product {row_number}: SKIPPED - {feedback}")
+        print("SKIPPED:", feedback)
 
-# STEP 5 - REPORT PHASE: GROQ SELECTS PRINT AND SAVE TOOLS
-print('\n# STEP 5 - REPORT PHASE (GROQ SELECTS LOCAL REPORT TOOLS)')
-printed = False
-saved = False
-report_decisions = 0
-report_messages = [
-    {'role': 'system', 'content': (
-        'All product rounds have finished. Four Python tools are available. '
-        'Choose print_report and save_report, one at a time. '
-        'These functions use the report stored by Python. '
-        'Do not read or calculate any more products.')},
-    {'role': 'user', 'content': (
-        f'{len(report)} products calculated; {len(skipped)} products skipped. '
-        'Print and save the complete inventory report using the local tools.')},
+    pause("Continue to next product.")
+
+
+# STEP 6 - LET GROQ SELECT REPORTING TOOLS
+print("\nREPORT PHASE - Groq selects print_report and save_report")
+messages = [
+    {"role": "system", "content": (
+        "All products are finished. Call print_report and save_report, "
+        "one at a time. Do not read or calculate more products."
+    )},
+    {"role": "user", "content": "Print and save the completed inventory report."},
 ]
 
-while not (printed and saved):
-    report_decisions += 1
-    if report_decisions > MAX_TOOL_DECISIONS:
-        print('# Reporting stopped: tool-selection safety limit reached')
+printed = False
+saved = False
+for round_number in range(1, MAX_ROUNDS + 1):
+    if printed and saved:
         break
-    print(f'\n# REPORT DECISION {report_decisions}')
-    if trace: input('Press <Enter> to let Groq choose a reporting tool...')
     try:
-        response = client.chat.completions.create(
-            model=MODEL, messages=report_messages, tools=TOOLS,
-            tool_choice='auto', parallel_tool_calls=False,
-        )
-        assistant = response.choices[0].message
-        calls = assistant.tool_calls or []
-        print('# GROQ SELECTED:', [c.function.name for c in calls] or 'No tool')
+        calls = ask_llm(messages)
         if not calls:
-            print('# Groq finished without another reporting tool')
             break
-        report_messages.append(assistant.model_dump(exclude_none=True))
-        for call in calls:
-            name = call.function.name
-            try:
-                parameters = json.loads(call.function.arguments or '{}')
-                if parameters != {}:
-                    raise ValueError('Reporting tools take no arguments')
-                if name not in FUNCTIONS:
-                    raise ValueError('Unknown tool: ' + name)
-                if name == 'print_report':
-                    if not printed:
-                        print('# EXECUTION NODE - common.print_report')
-                        if trace: input('Press <Enter> to print the report...')
-                        FUNCTIONS[name](report=report)
-                        printed = True
-                        transcript.append('Python print_report executed')
-                    result = {'status': 'printed'}
-                elif name == 'save_report':
-                    if not saved:
-                        print('# EXECUTION NODE - common.save_report')
-                        if trace: input('Press <Enter> to save the report...')
-                        transcript.append('Python save_report executed')
-                        FUNCTIONS[name](filename='03_graph_harness_inventory.csv', report=report, transcript=transcript)
-                        saved = True
-                    result = {'status': 'saved'}
-                else:
-                    raise ValueError(f'{name} cannot be used during reporting')
-            except Exception as exc:
-                result = {'error': str(exc)}
-            print('# PYTHON TOOL RESULT:', result)
-            report_messages.append({
-                'role': 'tool', 'tool_call_id': call.id,
-                'content': json.dumps(result),
-            })
-    except Exception as exc:
-        print('# Groq reporting error:', exc)
+        call = calls[0]
+        name = call.function.name
+        print("REPORT TOOL:", name)
+        try:
+            if name == "print_report":
+                if not printed:
+                    pause("EXECUTION - Print report.")
+                    FUNCTIONS[name](report)
+                    printed = True
+                result = {"status": "printed"}
+            elif name == "save_report":
+                if not saved:
+                    pause("EXECUTION - Save report.")
+                    transcript.append("Report saved using Python")
+                    FUNCTIONS[name]("03_graph_harness_inventory.csv", report, transcript)
+                    saved = True
+                result = {"status": "saved"}
+            else:
+                raise ValueError("Only reporting tools are allowed now.")
+        except Exception as error:
+            result = {"error": str(error)}
+        send_result(messages, call, result)
+    except Exception as error:
+        print("Groq reporting error:", error)
         break
 
-# STEP 6 - SAVE SKIPPED-ROW DETAILS EVEN IF REPORT TOOL WAS NOT CHOSEN
-OUTDIR.mkdir(parents=True, exist_ok=True)
-with (OUTDIR / '03_graph_harness_inventory_skipped.csv').open(
-    'w', newline='', encoding='utf-8'
-) as handle:
-    writer = csv.DictWriter(handle, fieldnames=['row', 'product_id', 'reason', 'trials'])
+
+# STEP 7 - SAVE SKIPPED PRODUCTS
+OUTDIR.mkdir(exist_ok=True)
+skipped_file = OUTDIR / "03_graph_harness_inventory_skipped.csv"
+with open(skipped_file, "w", newline="", encoding="utf-8") as file:
+    writer = csv.DictWriter(file, fieldnames=["row", "product_id", "reason", "trials"])
     writer.writeheader()
     writer.writerows(skipped)
-print('\n# FINISHED | Calculated:', len(report), '| Skipped:', len(skipped))
-print('# Report printed:', printed, '| Report saved:', saved)
-print('# Skipped report:', OUTDIR / '03_graph_harness_inventory_skipped.csv')
+
+print("\nDONE | Calculated:", len(report), "| Skipped:", len(skipped))
+print("Printed:", printed, "| Saved:", saved)
+print("Skipped rows saved to:", skipped_file)
