@@ -87,7 +87,6 @@ parser.add_argument(
     "--expression",
     default="12 + 8 * 3 - 10 / 5"
 )
-parser.add_argument("--trace", choices=("YES", "NO"), default="YES")
 args = parser.parse_args() #create object of user argsuments, user input accessed as object attribute 
 
 tokens = parse_expression(args.expression)
@@ -104,7 +103,8 @@ print("Expression:", args.expression)
 for round_number in range(1, 13):
     print("#" * 100)
     print(f"#start round {round_number}")
-    if args.trace == "YES": input("press <ret> to continue,..")
+    print("#starting expression:", tokens)
+    input("press <ret> to continue,..")
     # Python selects the next operation.
     print(f"#decide_next_call")
     call = decide_next_call(tokens)
@@ -124,7 +124,7 @@ for round_number in range(1, 13):
 
     position, name, a, b = call
     print(f"#Next call pos={position}, name={name}, a={a}, b={b}")
-    if args.trace == "YES": input("#Press <ret> to execute...")
+    input("#Press <ret> to execute...")
 
     # Execute the selected local function
     value = FUNCTIONS[name](a, b)
@@ -142,7 +142,7 @@ for round_number in range(1, 13):
 
     print("#Remaining expression:", tokens)
 
-    if args.trace == "YES": input("Press <ret> to continue...")
+    input("Press <ret> to continue...")
 
 else:
     raise SystemExit("Maximum rounds reached.")
