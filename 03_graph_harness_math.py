@@ -148,49 +148,48 @@ def propose_next_action():
     )
 
     prompt = f"""
-Original expression:
-{args.expression}
+    Original expression:
+    {args.expression}
 
-Executed local operations:
-{history_text}
+    Executed local operations:
+    {history_text}
 
-Harness feedback from previous attempt:
-{feedback}
+    Harness feedback from previous attempt:
+    {feedback}
+    """
+    instructons="""
+    You are a decision node,
+    not the arithmetic executor.
+    Return only valid JSON.
+    You are the DECISION NODE.
 
-You are the DECISION NODE.
+    Propose exactly ONE next action.
 
-Propose exactly ONE next action.
+    Allowed operations:
+    add, subtract, multiply, divide.
 
-Allowed operations:
-add, subtract, multiply, divide.
+    Rules:
+    1. Follow standard arithmetic precedence.
+    2. Multiplication (*), and division (/) have equal precedence,  before addition (+) and subtraction (-).
+    3. Evaluate equal-precedence operators left to right.
+    4. Do not execute arithmetic yourself.
+    5. Use recorded local results in subsequent operations.
+    6. Do not repeat already completed operations.
+    7. Do not report completion before all operations finish.
+    8. Return ONLY a valid JSON object.
 
-Rules:
-1. Follow standard arithmetic precedence.
-2. Multiplication (*), and division (/) have equal precedence,  before addition (+) and subtraction (-).
-3. Evaluate equal-precedence operators left to right.
-4. Do not execute arithmetic yourself.
-5. Use recorded local results in subsequent operations.
-6. Do not repeat already completed operations.
-7. Do not report completion before all operations finish.
-8. Return ONLY a valid JSON object.
+    If another operation is needed, return:
+    {{"done": false, "tool": "add", "a": 45, "b": 43}}
 
-If another operation is needed, return:
-{{"done": false, "tool": "add", "a": 45, "b": 43}}
-
-If all operations are finished, return:
-{{"done": true, "final": 10}}
-"""
-
+    If all operations are finished, return:
+    {{"done": true, "final": 10}}
+    """
     response = client.chat.completions.create(
         model=args.model,
         messages=[
             {
                 "role": "system",
-                "content": (
-                    "You are a decision node, "
-                    "not the arithmetic executor. "
-                    "Return only valid JSON."
-                )
+                "content": instructons
             },
             {
                 "role": "user",
