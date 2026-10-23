@@ -1,40 +1,34 @@
-"""Approach 0: Rule-Based Execution (no LLM).
-Run: python 00_rule_based_inventory.py   --trace YES
+"""Approach 0: Python rules select and execute the per-record tools.
+Run: python 00_rule_based_inventory2.py   --trace NO
 """
-from common import load_inventory, restock_row, print_report, save_report
 import argparse
+from common2 import InventoryTools, buildTotals, count_rows, new_output, pause
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--trace', choices=('YES', 'NO'), default='YES')
+parser.add_argument('--trace', choices=['YES', 'NO'], default='YES')
 args = parser.parse_args()
-trace = args.trace == 'YES' 
-print('=' * 70)
-print('APPROACH 0 - RULE-BASED INVENTORY (NO GROQ)')
-print('=' * 70)
-print('# STEP 1 - READ CSV LOCALLY')
-if trace: input('Press <Enter> to load inventory.csv...')
-products = load_inventory()
-print('Loaded', len(products), 'products')
+trace = args.trace == 'YES'
+filename = '00_rule_based_inventory.csv'
+new_output(filename)
+report = {}
+skipped = []
 
-print('# STEP 2 - PYTHON RULE ENGINE')
-print('Rule: quantity < minimum_stock => restock')
-if trace: input('Press <Enter> to start local decisions...')
-report = []
-transcript = []
-round_number=1
-for product in products:
-    print('#' * 70)
-    print(f'# ROUND {round_number} - {product["product_id"]}: {product["name"]}')
-    print('quantity=', product['quantity'], 'minimum_stock=', product['minimum_stock'])
-    if trace: input('Press <Enter> to execute local restock function...')
-    decision = restock_row(product)
-    print('PYTHON RESULT:', decision)
-    report.append(decision)
-    transcript.append(f'Round {round_number}: {decision}')
-    round_number=round_number+1
-    if trace: input('Press <Enter> to continue...')
+for number in range(1, count_rows() + 1):
+    tools = InventoryTools(number, filename)
+    print(f'\nPRODUCT {number} | Python chooses actions')
+    try:
+        for round_number, action in enumerate(['readProduct', 'restockProduct', 'buildReport', 'printReport', 'saveReport'], 1):
+            pause(trace, f'ROUND {round_number}: {action}')
+            if action == 'readProduct':
+                row = tools.readProduct(number)
+                product_id = row['product_id']
+            else:
+                result = getattr(tools, action)(product_id)
+                print(result)
+        report[number] = tools.report[product_id]
+    except (ValueError, KeyError, TypeError) as error:
+        print('SKIP PRODUCT:', error)
+        skipped.append((number, str(error)))
 
-print('# STEP 3 - FINAL RESULT')
-print_report(report)
-if trace: input('Press <Enter> to save outputs...')
-save_report('00_rule_based_inventory.csv', report, transcript)
+print('\nTOTALS:', buildTotals(report))
+print('SKIPPED:', skipped)
